@@ -42,14 +42,15 @@ voice/<話者>/*.mp3|mp4 ...
 | `src` / `start` / `end` | 抽出元ファイル名と、その中の開始／終了秒 |
 | `text` / `lang` | ASR 確定セリフ（正規化後）／既定 `JP` |
 | `scores` | スコア袋。各 Stage が追記（下記ステージ別の一覧） |
-| `dup_group_id` / `dup_reason` | 重複グループ ID と、代表でなくされた理由（`exact`/`fuzzy_text`/`fuzzy_audio`） |
+| `dup_group_id` / `dup_reason` | 重複グループ ID と、代表でなくされた理由（`exact`/`fuzzy_text`/`fuzzy_phoneme`/`fuzzy_audio`）。別テイクとして残したものは `scores.alt_take=true` |
 | `diversity_reason` | 多様性選別が落とした理由（`similar:<代表utt>` / `cap:prosody:<バケット>` / `cap:source:<src>` / `target_size`） |
 | `status` | `pending` → `adopted` / `excluded` / `pending_review`（Stage 6 で確定） |
 | `dropped_by` | 全失格理由の配列（閾値キー・`pipeline_error`・`empty_text`・`dedup:*`・`diversity:*` …） |
 | `review_reason` | 自動採用を避けた見送り行き（ユーザー辞書候補・修復音声・`review_*` 閾値） |
 
-> `dup_reason` の列挙値は 3 つだけ。音素三量 Jaccard によるファジィも `fuzzy_audio` ラベルになる
-> （`fuzzy_audio` = 「音素レベルで近い」＋「音声指紋で近い」の両方）。
+> `dup_reason` の列挙値は 4 つ。`fuzzy_phoneme` = 音素三量 Jaccard で近い（音声は比べていない）、
+> `fuzzy_audio` = 音声内容指紋で近い（同じ録音のズレ切り出し）。旧版は両方を `fuzzy_audio` と表示していた。
+> 本文が同じでも指紋が一致しない別の録音は、`[dedup] max_takes_per_text` まで別テイクとして残す（`alt_take`）。
 
 ---
 

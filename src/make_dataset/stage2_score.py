@@ -19,6 +19,35 @@ from .config import Config
 from .manifest import Record
 
 
+def clipped_ratio(x: np.ndarray, min_run: int = 3, rel: float = 0.98, flat: float = 1e-4) -> float:
+    """本当に波形が潰れているサンプルの割合 (クリッピング率).
+
+    ハードクリップは「ピーク付近で同じ値が続く平らな頭」(プラトー) になる。ここでは
+    |x| >= rel × ピーク かつ 隣のサンプルとの差 <= flat の連続が min_run サンプル以上の区間を数える。
+
+    旧実装 (|x| >= 0.999 の割合) は「フルスケールに触れたか」を数えていたため、音割れしていない
+    大音量のマスタリング (ゲーム・アニメ音声に多い) も除外していた。実測: 閾値 0.002 で全体の 17%、
+    声の高さ上位 25% では 29% が除外され、除外分の中央値は 0.0029 と閾値をわずかに超える程度だった。
+    フルスケール未満で潰れた波形 (クリップ後に音量を下げた素材) もピーク相対で拾える。
+    """
+    x = np.asarray(x, dtype=np.float64)
+    a = np.abs(x)
+    if a.size < min_run:
+        return 0.0
+    peak = float(a.max())
+    if peak <= 0:
+        return 0.0
+    # cand[i]: サンプル i と i+1 がどちらもピーク付近で、ほぼ同値 (プラトーの 1 区間)
+    cand = (a[:-1] >= rel * peak) & (a[1:] >= rel * peak) & (np.abs(np.diff(x)) <= flat)
+    if not cand.any():
+        return 0.0
+    # cand の連続区間 (長さ L) は L+1 サンプルのプラトー。min_run サンプル以上のものだけ数える
+    edges = np.diff(np.concatenate([[0], cand.astype(np.int8), [0]]))
+    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    lens = ends - starts + 1
+    return float(lens[lens >= min_run].sum()) / a.size
+
+
 def _finite(v) -> float | None:
     """Praat の undefined (nan) や非有限値を None にする (検証不能として扱う)."""
     try:
@@ -47,7 +76,10 @@ def score_segments(records: list[Record], cfg: Config, cache_dir) -> None:
             sr = 44100
 
             # クリッピング / デジタル無音 / DC オフセット (学習後に修復不可能なので投入時点で弾く)
-            clip_ratio = float(np.mean(np.abs(x) >= 0.999))
+            clip_ratio = clipped_ratio(x)
+            peak_ratio = float(
+                np.mean(np.abs(x) >= 0.999)
+            )  # 旧 clip_ratio (フルスケール到達率、参考値)
             dc_offset = float(abs(np.mean(x)))
             digital_silence = float(np.mean(x == 0.0))
 
@@ -127,6 +159,7 @@ def score_segments(records: list[Record], cfg: Config, cache_dir) -> None:
                     "lufs": round(lufs, 1) if lufs is not None else None,
                     "voiced_ratio": round(voiced_ratio, 2),
                     "clip_ratio": round(clip_ratio, 5),
+                    "peak_ratio": round(peak_ratio, 5),
                     "dc_offset_abs": round(dc_offset, 5),
                     "digital_silence_ratio": round(digital_silence, 4),
                 }

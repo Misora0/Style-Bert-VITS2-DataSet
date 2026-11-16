@@ -36,6 +36,9 @@ DEFAULTS = {
         #       manifest 上のスキップ記録だけ残す。採用/除外の発話長ゲートは [thresholds].min_seg_sec が担う
         #       (下限を閾値より低く置くことで、rescore で min_seg_sec を下げる再採用が可能になる)。
         "cache_min_sec": 0.2,
+        # この秒数以下のファイルは VAD で分割せず 1 発話として扱う (1 ファイル 1 セリフの素材向け)。
+        # 0 で無効 (従来どおり min_silence_duration_ms の無音で分割)。
+        "whole_file_max_s": 0.0,
         # 1 ソースをこの長さ (分) のチャンクに分割してデコード→VAD する (重なり込みで境界の文を失わない)。
         #       長尺動画 1 本をフル尺デコードして常時保持し続ける OOM を防ぐ。None で無効 (旧来=一括デコード)。
         "decode_chunk_min": 10.0,
@@ -58,6 +61,10 @@ DEFAULTS = {
         "text_jaccard": 0.92,  # テキストファジィ (shingle Jaccard)
         "phoneme_jaccard": 0.90,  # 音素三量文字列 Jaccard
         "audio_jaccard": 0.5,  # 音声内容指紋 (fp_sig MinHash 一致率) によるズレ切り出し重複検出
+        # 本文が同じでも別の録音なら、同じセリフの別テイクとして最大この本数まで残す (1 = 従来どおり代表だけ)
+        "max_takes_per_text": 1,
+        # 別テイクとして残す最小の違い (声の高さ[半音]/2 + 音量[dB]/3 + 文末記号の違い 1 の和)
+        "take_min_diff": 1.0,
     },
     # 多様性選別 (Stage 5b): 重複排除の後に残り、貪欲選択して「既採用と類似しすぎる発話」を落とす。
     #   採用集合の総対類似度を sim_threshold 未満に抑えることで、データセットの多様性を上げる。
@@ -92,6 +99,9 @@ DEFAULTS = {
         "language": "ja",
         "beam_size": 1,
         "batch_size": 8,
+        # 主 ASR が「。」に潰した文末の ? / ! を、読みが一致する (x_cer <= 下の値) ときだけ第 2 系統から補う
+        "restore_punct": False,
+        "restore_punct_max_x_cer": 0.15,
     },
     # SQUIM_SUBJECTIVE を mos として記録 (SNR 最良発話をアンカーにした相対 MOS)。初回 DL 約 360MB。
     "stage4": {"subjective": False},

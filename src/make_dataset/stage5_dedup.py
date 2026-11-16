@@ -7,6 +7,12 @@
 - union-find のマージ時にグループ理由を正しく引き継ぐ (優先度が高い理由を採用)。
 - 代表は「閾値チェックを通過したもの」から quality → asr_conf → snr で選ぶ。代表候補が後で
   閾値落ちしてグループごと消えることを防ぐ (evaluate_checks が先に走っている前提)。
+- 別テイク: 本文が同じでも音声指紋が一致しない (= 別の録音) メンバーは、同じセリフの別の演技。
+  dedup.max_takes_per_text まで、声の高さ・音量・文末記号が代表から最も遠いものを残す
+  (alt_take)。ゲーム音声では「はい。」「プロデューサー。」が数十〜100 テイクあり、全部を 1 本に
+  まとめると感情のバリエーションがまるごと消える。同じ録音のズレ切り出しは従来どおり 1 本にまとめる。
+- 理由ラベル: exact (本文一致) / fuzzy_text (本文の shingle) / fuzzy_phoneme (音素三量) /
+  fuzzy_audio (音声内容指紋)。旧版は音素ファジィも fuzzy_audio と表示していた。
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import numpy as np
 from .config import Config
 from .manifest import Record
 
-_REASON_PRIORITY = {"exact": 0, "fuzzy_text": 1, "fuzzy_audio": 2}
+_REASON_PRIORITY = {"exact": 0, "fuzzy_text": 1, "fuzzy_phoneme": 2, "fuzzy_audio": 3}
 
 # 内容指紋 fp_sig の MinHash 署名パラメータ (Stage 2 が FP_NUM_PERM 長で生成 / ここで band 分割して照合)。
 # 一方だけ変えると band 切り出しが静かに壊れるため、生成側 (stage2) もこの定数を import して揃える。
@@ -173,6 +179,8 @@ def dedup(records: list[Record], cfg: Config) -> None:
         cfg.get("dedup.phoneme_jaccard"),
         cfg.get("dedup.audio_jaccard"),
     )
+    max_takes = int(cfg.get("dedup.max_takes_per_text") or 1)
+    min_diff = float(cfg.get("dedup.take_min_diff") or 0.0)
     for r in records:  # rescore 再実行時に前回のグループ判定を持ち越さない
         r.dup_group_id = r.dup_reason = None
     texts = [r.text for r in records]
@@ -195,7 +203,7 @@ def dedup(records: list[Record], cfg: Config) -> None:
             pairs.append((i, j, "fuzzy_text"))
     for i, j in sorted(_minhash_candidate_pairs(ph, seed=3)):
         if ph[i] and _jaccard(ph[i], ph[j]) >= p_jac:
-            pairs.append((i, j, "fuzzy_audio"))
+            pairs.append((i, j, "fuzzy_phoneme"))  # 音声は比べていない (旧版は fuzzy_audio と表示)
 
     # 内容指紋 (fp_sig) 一致によるズレ切り出し重複。band 衝突候補のみ厳密比較する
     sigs = [r.scores.get("fp_sig") or [] for r in records]
@@ -258,11 +266,65 @@ def dedup(records: list[Record], cfg: Config) -> None:
                 records[i].scores.get("snr") or -99,
             ),
         )
+        keep = _pick_takes(records, idxs, rep, max_takes, a_jac, min_diff)
         for i in idxs:
             r = records[i]
             r.dup_group_id = gid
-            if i != rep:
+            r.scores.pop("alt_take", None)
+            if i in keep and i != rep:
+                r.scores["alt_take"] = True  # 同じセリフの別テイクとして残す (除外しない)
+            elif i != rep:
                 r.dup_reason = reason  # 除外確定 (dropped_by への反映) は finalize で行う
+
+
+def _take_distance(a: Record, b: Record) -> float:
+    """2 テイクの「演技の違い」の大きさ (声の高さ [半音]/2 + 音量 [dB]/3 + 文末記号の違い 1)."""
+    import math
+
+    sa, sb = a.scores, b.scores
+    d = 0.0
+    fa, fb = sa.get("f0_median_hz"), sb.get("f0_median_hz")
+    if fa and fb:
+        d += abs(12 * math.log2(fa / fb)) / 2.0
+    la, lb = sa.get("lufs"), sb.get("lufs")
+    if la is not None and lb is not None:
+        d += abs(la - lb) / 3.0
+    if (a.text or "")[-1:] != (b.text or "")[-1:]:
+        d += 1.0
+    return d
+
+
+def _same_recording(a: Record, b: Record, a_jac: float) -> bool:
+    sa, sb = a.scores.get("fp_sig") or [], b.scores.get("fp_sig") or []
+    if len(sa) != FP_NUM_PERM or len(sb) != FP_NUM_PERM:
+        return False
+    return float(np.mean(np.array(sa) == np.array(sb))) >= a_jac
+
+
+def _pick_takes(
+    records: list[Record], idxs: list[int], rep: int, k: int, a_jac: float, min_diff: float
+) -> set[int]:
+    """グループから残すテイク (代表を含む) を選ぶ。k<=1 なら代表だけ (従来動作).
+
+    候補は閾値を通過し、既に選んだテイクのどれとも「同じ録音」(fp_sig 一致率 >= a_jac) でないもの。
+    既選択との最小距離 (_take_distance) が最大のものを順に足し、min_diff 未満しか離れていなければ打ち切る。
+    """
+    keep = {rep}
+    if k <= 1 or not _passes(records[rep]):
+        return keep
+    pool = [i for i in idxs if i != rep and _passes(records[i])]
+    while len(keep) < k and pool:
+        pool = [
+            i for i in pool if not any(_same_recording(records[i], records[j], a_jac) for j in keep)
+        ]
+        if not pool:
+            break
+        best = max(pool, key=lambda i: min(_take_distance(records[i], records[j]) for j in keep))
+        if min(_take_distance(records[best], records[j]) for j in keep) < min_diff:
+            break
+        keep.add(best)
+        pool.remove(best)
+    return keep
 
 
 # ---------------------------------------------------------------- 多様性選別 (Stage 5b)
@@ -390,6 +452,11 @@ def diversity_select(records: list[Record], cfg: Config) -> None:
     cand_recs = [records[i] for i in cand]
     tokens = [phoneme_tokens(r.text) if r.text else [] for r in cand_recs]
     adj = _redundant_adjacency(cand_recs, tokens, metric, thr)
+    # 同じ重複グループで dedup が残した別テイク同士は、本文が同じなので必ず「類似」になる。
+    # テイクの数は dedup.max_takes_per_text で既に絞ってあるので、ここでは互いを間引かない
+    for i, r in enumerate(cand_recs):
+        if r.dup_group_id and i in adj:
+            adj[i] = {j for j in adj[i] if cand_recs[j].dup_group_id != r.dup_group_id}
     ph_sets = [set(t) for t in tokens]  # 音素カバレッジ保護用
     tri_sets = _trigram_sets(
         tokens

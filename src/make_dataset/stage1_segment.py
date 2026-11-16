@@ -91,6 +91,7 @@ def segment_sources(sources: list[Source], cfg: Config, cache_dir: Path) -> list
     # 補正で詰めた実境界へ付ける納品用の無音マージン [サンプル数]
     out_pad = round(44100 * float(s1.get("output_pad_ms") or 0) / 1000)
     cache_min = s1["cache_min_sec"]
+    whole_max = float(s1.get("whole_file_max_s") or 0)  # 0 = 無効 (従来どおり VAD で分割)
     chunk_s = (s1.get("decode_chunk_min") or 0) * 60.0
     # チャンク境界で VAD のマージ/分割が全体デコードとズレないよう、前後に「最長発話 + 無音/音声判定 + 補正窓」
     # ぶんの文脈を確保する 。保持メモリは (chunk + 2*pad) で有界。
@@ -134,6 +135,16 @@ def segment_sources(sources: list[Source], cfg: Config, cache_dir: Path) -> list
                     speech_pad_ms=pad_ms,
                     return_seconds=False,
                 )
+                # 1 ファイル 1 セリフの素材 (ゲーム・アニメのボイス等) は、ファイルの境界がそのまま文の境界。
+                # VAD で「間 (ため)」ごとに切ると、短い呼び掛け・感嘆が断片として捨てられ、残りも
+                # 文の途中なのに「。」で終わる教師になる (実データ: 84% のファイルが分割、1,012 本が一部だけ採用)。
+                # whole_file_max_s 以下のファイルは、最初の発話の頭〜最後の発話の終わりを 1 本にまとめ、
+                # 前後の無音だけを詰める (中の間は残す)。
+                whole = bool(
+                    whole_max and not chunked and len(ts) > 1 and len(x441) <= whole_max * 44100
+                )
+                if whole:
+                    ts = [{"start": ts[0]["start"], "end": ts[-1]["end"]}]
                 win441 = int(44100 * win_ms / 1000)
                 base16 = round(win_lo * 16000)
                 own_hi16 = round(owned_hi * 16000) if owned_hi != float("inf") else None
@@ -178,6 +189,8 @@ def segment_sources(sources: list[Source], cfg: Config, cache_dir: Path) -> list
                     cache_dir.mkdir(parents=True, exist_ok=True)
                     sf.write(cache_dir / f"{rec.utt_id}.flac", seg441, 44100, format="FLAC")
                     rec.scores["seg_dur"] = round((e441 - s441) / 44100, 3)
+                    if whole:
+                        rec.scores["whole_file"] = True  # 分割せず 1 本にまとめたファイル
                     records.append(rec)
                     idx += 1
         except Exception as e:  # noqa: BLE001

@@ -477,6 +477,27 @@ def refresh_asr2_scores(records, cfg: Config, cache_dir) -> int:
     return n
 
 
+def _restore_punct(r, raw_text: str, max_x_cer: float) -> bool:
+    """主 ASR 本文の末尾「。」を第 2 系統の ? / ! に置き換え、本文依存のスコアを引き直す.
+
+    読み (reading_key) は句読点を含まないので x_cer は変わらない。文末記号が変わると
+    文末の開き (text_tail_open) と表層 CER・テキスト特徴量が変わるので、それだけ引き直す。
+    lm_ppl はこの後 (transcribe_segments の lm 段) で新しい本文に対して計算される。
+    """
+    from .punct import restore_terminal_punct
+
+    sc = r.scores
+    new = restore_terminal_punct(r.text, sc.get("asr2_text"), sc.get("x_cer"), max_x_cer)
+    if not new:
+        return False
+    r.text = new
+    sc["punct_restored"] = new[-1]
+    sc.update(g2p_check(new, raw=raw_text))
+    sc.update(text_features(new))
+    sc["x_cer_surface"] = round(_cer(new, sc["asr2_text"]), 3)
+    return True
+
+
 def transcribe_segments(records, cfg: Config, cache_dir) -> None:
     """各 Record に ASR テキスト・信頼度・テキストフィルタ用スコアを書き込む (判定は Stage 6)."""
     from .stage0_ingest import load_cached
@@ -506,6 +527,8 @@ def transcribe_segments(records, cfg: Config, cache_dir) -> None:
         fn2 = backends[b2]
     align_on = bool(cfg.get("alignment.enabled"))
     lm_on = bool(cfg.get("lm.enabled"))
+    punct_on = bool(cfg.get("asr2.restore_punct"))
+    punct_max = float(cfg.get("asr2.restore_punct_max_x_cer") or 0.0)
     for r in tqdm(records, desc="stage3 asr", unit="utt"):
         try:  # 1 本の異常セグメントでラン全体を止めない
             audio16k = load_cached(r, cache_dir, 16000)
@@ -551,6 +574,8 @@ def transcribe_segments(records, cfg: Config, cache_dir) -> None:
                             _cer(text, t2), 3
                         )  # 参考値: 句読点と同音異字を含む表層比較
                         sc["x_cer_algo"] = X_CER_ALGO
+                        if punct_on:  # 主 ASR が潰した文末の ? / ! を第 2 系統から補う (punct.py)
+                            _restore_punct(r, raw_text, punct_max)
                     except Exception as e:  # noqa: BLE001
                         sc.setdefault("asr2_errors", []).append(repr(e))
                 else:
