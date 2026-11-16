@@ -3,9 +3,9 @@
 - 埋め込み統計はコーパス全体で次元ごとに std へスケーリング (CMVN の分散側) してから cosine を取る。
   c0 (エネルギー) が cosine を支配して speaker_sim が「音量類似度」になるのを防ぐ。正規化後のベクトルを
   scores["emb"] に保存するので、rescore は再計算なしに同じ指紋で比較できる。
-- voiced/unvoiced は絶対的な騒音床で分離する (中央値分割だと voiced_ratio が常に ≒0.5 で無情報)。
-- jitter/shimmer は有声区間 (連続した pitch 区間) の中に限り、Praat の local 定義に倣う
-  (無声フレームを落とした列に np.diff を当てて境界を跨がない。shimmer は振幅摂動で別に計算)。
+- voiced/unvoiced は騒音床 (下限 -55 dBFS) で分離する (中央値分割だと voiced_ratio が常に ≒0.5 で無情報)。
+- jitter/shimmer は Praat の PointProcess (periodic, cc) から Get jitter/shimmer (local) で取る
+  (Praat の定義そのもの。ピッチ軌跡の差分による近似は使わない)。
 - LUFS ゲートはメータのブロック長 (0.4s) ベース。計算不能・非有限なら None を記録し、
   x * -inf で nan を撒き散らさない。
 """
@@ -19,19 +19,13 @@ from .config import Config
 from .manifest import Record
 
 
-def _voiced_runs(valid: np.ndarray) -> list[slice]:
-    """pitch track の連続有声区間 (NaN/0 で切ったスライス列). 境界を跨いだ差分を混ぜないための分割."""
-    runs, start = [], None
-    for i, ok in enumerate(valid):
-        if ok and start is None:
-            start = i
-        elif not ok and start is not None:
-            if i - start >= 3:
-                runs.append(slice(start, i))
-            start = None
-    if start is not None and len(valid) - start >= 3:
-        runs.append(slice(start, len(valid)))
-    return runs
+def _finite(v) -> float | None:
+    """Praat の undefined (nan) や非有限値を None にする (検証不能として扱う)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
 
 
 def score_segments(records: list[Record], cfg: Config, cache_dir) -> None:
@@ -63,22 +57,26 @@ def score_segments(records: list[Record], cfg: Config, cache_dir) -> None:
             rolloff = float(freqs[min(int(np.searchsorted(cum, 0.99 * cum[-1])), len(freqs) - 1)])
             hf_ratio = float(psd[freqs > 7000].sum() / (psd.sum() + 1e-12))
 
-            # フレームエネルギーを絶対閾値 (騒音床の推定) で分割して SNR と voiced_ratio を作る。
-            # 床は max(セグメント内 p20×3, -55 dBFS) ではなく min を取る: 無音を含む収録では p20×3 が
-            # 実騒音床になるが、無音ゼロのホットな収録では p20×3 が「静かな発話」になって SNR が
-            # ダイナミックレンジ化するため、絶対床で頭打ちする (voiced_ratio は床超過率のまま)。
+            # フレームエネルギーを騒音床で分割して SNR と voiced_ratio を作る。
+            #   雑音レベル = フレーム RMS の p10 (発話内の最も静かな 1 割)。
+            #   有声判定の床 = max(雑音レベル + 6 dB, -55 dBFS)。-55 dBFS は「床の下限」:
+            #   旧実装は min(p20×3, -55 dBFS) で床が常に -55 dBFS 以下に抑えられ、雑音床が -55 dBFS を
+            #   超える収録 (家庭録音・配信など大半) では全フレームが床超えになって、SNR が
+            #   「話声レベル - (-55)」= 録音レベルの指標に化けていた (真の SNR 5 dB が 35 dB と出た)。
+            #   p20×3 (+9.5 dB) はポーズが 2 割未満のきつい切り出しで床が話声を超えるため p10+6 dB にした。
+            #   ポーズがほぼ無い発話では p10 が「静かな話声」になり、SNR は控えめ (下振れ) に出る。
             hop = sr // 100  # 10ms
             fe = _frame_rms(x, sr, hop)
-            floor = min(float(np.percentile(fe, 20)) * 3.0, 10 ** (-55 / 20))
+            noise = float(np.percentile(fe, 10))
+            floor = max(noise * 2.0, 10 ** (-55 / 20))
             vmask = fe > floor
             if (~vmask).any() and vmask.any():
                 snr = float(
                     10 * np.log10((fe[vmask] ** 2).mean() / ((fe[~vmask] ** 2).mean() + 1e-12))
                 )
             elif vmask.any():
-                # 床を下回るフレームが1本もない (無音なしのホットな収録) → 絶対床 (-55 dBFS) 比で算出
-                abs_floor = 10 ** (-55 / 20)
-                snr = float(10 * np.log10((fe[vmask] ** 2).mean() / (abs_floor**2)))
+                # 床を下回るフレームが 1 本もない (ポーズ無しの切り出し) → 雑音推定 (p10) 比で算出
+                snr = float(10 * np.log10((fe[vmask] ** 2).mean() / (noise**2 + 1e-12)))
             else:
                 snr = None  # ほぼ無音のセグメント (検証不能としてゲート側で不合格扱い)
             voiced_ratio = float(vmask.mean())
@@ -90,41 +88,30 @@ def score_segments(records: list[Record], cfg: Config, cache_dir) -> None:
             else:
                 lufs = None
 
-            # 有声区間ごとに周期・振幅摂動を計算 (境界跨ぎ差分を混ぜない、shimmer は jitter のコピーではない)
+            # jitter / shimmer は Praat の定義そのもの (声門周期の PointProcess 上の local 摂動) で測る。
+            #   旧実装は 10ms 刻みのピッチ軌跡の差分を使い、しかも分母にだけ有声区間長を掛けていたため
+            #   値が「真の jitter ÷ 有声フレーム数」に潰れていた (周期揺らぎ 4% で 0.0014、Praat では 0.035)。
+            #   Praat: jitter(local) = 連続周期差の絶対値平均 / 平均周期 (Voice 2. Jitter)。
+            #   周期が数えられない (無声・短すぎ) ときは Praat が undefined (nan) を返す → None。
             import parselmouth
+            from parselmouth.praat import call
 
             seg = parselmouth.Sound(
-                np.ascontiguousarray(x16, dtype=np.float32), sampling_frequency=16000
+                np.ascontiguousarray(x16, dtype=np.float64), sampling_frequency=16000
             )
             st = seg.to_pitch_ac(time_step=0.01)
             f = st.selected_array["frequency"]
             valid = ~np.isnan(f) & (f > 0)
             jitter = shimmer = None
             if valid.any():
-                num, den = 0.0, 0.0
-                for sl in _voiced_runs(valid):  # 有声区間ごとに周期摂動 (境界跨ぎの差分を混ぜない)
-                    t = 1.0 / f[sl]
-                    num += float(np.abs(np.diff(t)).mean())
-                    den += float(np.mean(t)) * (sl.stop - sl.start)
-                jitter = num / den if den > 0 else None
-                # shimmer_local 相当: 有声グリッド上の振幅の摂動比 (振幅は音声から直接)
-                af = 160  # 16k で 10ms
-                t0, dt = float(st.start_time), float(st.time_step)  # pitch は等間隔グリッド
-                ci = np.rint((t0 + np.arange(len(f)) * dt) * 16000.0).astype(np.int64)
-                ok = (ci >= af // 2) & (ci < len(x16) - af // 2)
-                amps = np.full(len(f), np.nan)
-                if (
-                    ok.any()
-                ):  # E: ピッチグリッド上の振幅を一行で集約 (旧: len(f) 回の Python ループ)
-                    idx = ci[ok][:, None] + np.arange(-af // 2, af // 2)[None, :]
-                    amps[ok] = np.sqrt((x16[idx] ** 2).mean(axis=1))
-                an, ad = 0.0, 0.0
-                for sl in _voiced_runs(valid):
-                    a = amps[sl]
-                    if len(a) >= 3 and np.isfinite(a).all():
-                        an += float(np.abs(np.diff(a)).mean())
-                        ad += float(np.mean(a))
-                shimmer = an / ad if ad > 0 else None
+                try:
+                    pp = call(seg, "To PointProcess (periodic, cc)", 75.0, 600.0)
+                    jitter = _finite(call(pp, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3))
+                    shimmer = _finite(
+                        call([seg, pp], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+                    )
+                except parselmouth.PraatError:  # 周期点が取れない等: 検証不能 (None) として記録
+                    jitter = shimmer = None
             f0_median = float(np.median(f[valid])) if valid.any() else None
 
             r.scores.update(

@@ -129,6 +129,23 @@ _ALLOWED_ACTIONS = {
 }
 
 
+# CHECKS 以外で evaluate_checks が読む [thresholds] のキー
+_EXTRA_THRESHOLD_KEYS = {
+    "min_mora_rate",
+    "max_mora_rate",
+    "on_g2p_fail",
+    "on_unknown_tokens",
+    "review_lm_ppl",
+    "review_x_cer",
+}
+
+
+def unknown_threshold_keys(t: dict) -> list[str]:
+    """[thresholds] の未知キー (打ち間違い) を返す。未知キーは黙って無視されゲートが効かないため起動時に弾く."""
+    known = {k for k, _, _ in CHECKS} | _EXTRA_THRESHOLD_KEYS
+    return sorted(k for k in t if k not in known)
+
+
 def _validate_actions(t: dict) -> None:
     """on_g2p_fail / on_unknown_tokens の値を検証する (誤字が黙って「除外→見送り降格」するのを防ぐ)."""
     for key, allowed in _ALLOWED_ACTIONS.items():

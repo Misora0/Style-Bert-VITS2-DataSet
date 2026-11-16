@@ -128,7 +128,8 @@ targets = ["min_snr_db", "min_quality_pesq", "min_stoi", "min_si_sdr"]
 # ([asr2] だけ例外。rescore が .cache から x_cer を追加計算する)。
 min_seg_sec = 0.5              # 発話長ゲート: 0.5 秒以上 (満たないものは除外)
 max_seg_sec = 12.0             # 発話長ゲート: 12 秒未満 (12.0 以上は除外。VAD 側も 12s で分割する)
-min_snr_db = 5.0
+min_snr_db = 5.0               # 発話内の最静 1 割を雑音とみなした SNR。雑音床が -55 dBFS を超える収録でも真値を返す
+                               #   (旧計算は ~35 dB に張り付いていた)。旧 manifest の snr は無効なので run し直してから校正する
 min_asr_conf = 0.30
 min_align_conf = 0.30
 min_mora_rate = 2.0
@@ -140,8 +141,9 @@ max_reverb_score = 0.5
 min_quality_pesq = 1.5         # 1.0 は PESQ スケールの下限値そのもので実質 no-op だった。実測分布を見て締める
 min_chars = 4
 max_filler_ratio = 0.6         # 0.8 は甘すぎた (filler_ratio は出現回数ベース)
-max_jitter_local = 0.02        # jitter を有声区間内の Praat local 定義に修正したのに合わせて 0.5 → 0.02
-# max_shimmer_local = 0.05     # shimmer も別計算に修正済み。実測分布を確認して有効化
+max_jitter_local = 0.02        # Praat の Get jitter (local) と同値 (2%)。旧計算は値が ~0 に潰れて実質無効だった。
+                               #   演技音声は 1% を超えやすいので、run し直した実測分布を見て校正する
+# max_shimmer_local = 0.05     # Praat の Get shimmer (local) と同値。実測分布を確認して有効化
 min_speaker_sim = 0.5          # CMVN 済み埋め込みの主話者 centroid と cosine (別人混入)。実測分布で要校正
 min_kana_ratio = 0.5           # 日本語らしさ (英語・記号化テキストの検出)。分母は かな+英数字 のみ
 max_clip_ratio = 0.002         # クリッピング率 (学習後に修復不可能)
