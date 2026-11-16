@@ -149,6 +149,20 @@ DEFAULTS = {
 }
 
 
+def _unknown_keys(data: dict[str, Any]) -> list[str]:
+    """DEFAULTS に無いセクション / キー (thresholds 以外) を "section.key" 形式で返す (打ち間違い検出)."""
+    out: list[str] = []
+    for sec, body in data.items():
+        if sec == "thresholds":
+            continue
+        if sec not in DEFAULTS:
+            out.append(f"[{sec}]")
+            continue
+        if isinstance(body, dict) and isinstance(DEFAULTS[sec], dict):
+            out.extend(f"{sec}.{k}" for k in body if k not in DEFAULTS[sec])
+    return out
+
+
 def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
     for k, v in over.items():
@@ -163,14 +177,30 @@ class Config:
         # DEFAULTS を深いコピーしてからマージ: さもないと _merge が入れ子 dict を参照共有し、
         # cfg.data の一部を書き換えたとき DEFAULTS (＝後続の全 Config) が汚染される。
         self.data: dict[str, Any] = _merge(copy.deepcopy(DEFAULTS), data)
+        # filters.toml にあったが DEFAULTS に存在しないセクション/キー ("[tag]" や "[asr] modle" 等)。
+        # [thresholds] のキーは別途 stage6 の CHECKS と照合する (cli で検証)
+        self.unknown_keys: list[str] = []
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
+        """filters.toml を読む。path=None ならコード側 DEFAULTS のみ (テスト用).
+
+        パスを渡したのに存在しない場合はエラーにする。[thresholds] にはコード側デフォルトが無いので、
+        --config の打ち間違いを黙って DEFAULTS で続行すると「全ゲート無効」のまま数時間のランが
+        最後まで走ってしまう。
+        """
         data: dict[str, Any] = {}
-        if path is not None and Path(path).exists():
+        if path is not None:
+            if not Path(path).is_file():
+                raise FileNotFoundError(
+                    f"設定ファイル {path} が見付からない (--config のパスを確認してください)。"
+                    " [thresholds] にはコード側の既定値が無いため、設定なしでは全ゲートが無効になる"
+                )
             with open(path, "rb") as f:
                 data = tomllib.load(f)
-        return cls(data)
+        cfg = cls(data)
+        cfg.unknown_keys = _unknown_keys(data)
+        return cfg
 
     def get(self, dotted: str) -> Any:
         """点記号参照。TOML 由来の値は型が一律に決まらないので Any (閾値は float、パスは str 等)."""

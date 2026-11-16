@@ -42,8 +42,11 @@ SYMBOL_READINGS: dict[str, str] = {
     "⑩": "10",
 }
 
-# セリフに残してよい句読点・区切り (学習側 G2P が黙って処理するもの)。これ以外の記号は残留記号として数える
-_ALLOWED_SYMBOLS = set("。，、！？：；・〜ー…‐–―’‘“”\"'()（）-")
+# セリフに残してよい句読点・区切り (学習側 G2P が黙って処理するもの)。これ以外の記号は残留記号として数える。
+# residual_symbols は normalize_text (NFKC) の**後**のテキストに掛かるので、NFKC で半角化される形
+# (！→! ？→? …→... ：→: ；→; ～→~ ，→,) も必ず含める。全角だけだと感嘆文・疑問文・言いよどみが
+# 「残留記号あり」になり、max_residual_symbols を有効にした途端に感情の強い発話が全滅する。
+_ALLOWED_SYMBOLS = set("。，、！？：；・〜ー…‐–―’‘“”\"'()（）-") | set("!?.,:;~")
 
 
 def expand_symbols(text: str) -> tuple[str, int]:

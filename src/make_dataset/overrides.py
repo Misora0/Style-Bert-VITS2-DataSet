@@ -27,6 +27,31 @@ _STATUS_ALIASES = {
 }
 
 
+def _refresh_text_dependent_scores(r, text: str, cfg) -> None:
+    """本文に依存する検証スコアを新しい本文で引き直す (音声・ASR 再実行なし).
+
+    - x_cer / x_cer_surface: 第 2 系統の出力 asr2_text は manifest に残っているので、
+      新しい本文との 2 系統間 CER をその場で再計算する。引き直さないと「本文を直したのに
+      旧本文の x_cer で max_x_cer / review_x_cer に落ち続ける」(report が案内する救済手順が効かない)。
+    - lm_ppl: [lm] が有効なら新しい本文で再計算する。無効なら旧本文の値は意味を失うので消す
+      (ゲート無効なら影響なし。有効なら run 側と同じく検証不能扱い)。
+    """
+    from .stage3_asr import X_CER_ALGO, _cer, reading_key
+
+    s = r.scores
+    t2 = s.get("asr2_text")
+    if isinstance(t2, str):
+        s["x_cer"] = round(_cer(reading_key(text), reading_key(t2)), 3)
+        s["x_cer_surface"] = round(_cer(text, t2), 3)
+        s["x_cer_algo"] = X_CER_ALGO
+    if "lm_ppl" in s:
+        s.pop("lm_ppl", None)
+        if cfg is not None and cfg.get("lm.enabled"):
+            from .lm import score_text
+
+            score_text(r, cfg)
+
+
 def apply_text_overrides(records, outdir: Path, cfg=None) -> int:
     """text_overrides.jsonl があれば読み、テキスト/判定の上書きをレコードへ反映する (件数を返す)。
 
@@ -64,6 +89,7 @@ def apply_text_overrides(records, outdir: Path, cfg=None) -> int:
             )
             r.scores["repeat_block"] = bool(re.search(r"(.{3,})\1{2,}", t))
             r.scores.update(text_features(t))
+            _refresh_text_dependent_scores(r, t, cfg)
             r.scores["text_override"] = True
         st = d.get("status")
         if st:

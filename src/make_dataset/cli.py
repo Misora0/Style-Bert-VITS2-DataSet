@@ -37,6 +37,7 @@ from .stage5_dedup import dedup, diversity_select
 from .stage6_output import (
     evaluate_checks,
     finalize_statuses,
+    unknown_threshold_keys,
     write_outputs,
     write_report,
     write_run_meta,
@@ -105,7 +106,9 @@ def resolve_inputs(tokens: list[str], voice_root: Path) -> list[Path]:
             target = Path(token)
             if not target.exists():
                 hint = (
-                    f" (voice 配なら {voice_root / token})" if (voice_root / token).exists() else ""
+                    f" (voice 配下なら {voice_root / token})"
+                    if (voice_root / token).exists()
+                    else ""
                 )
                 raise _bad_input(
                     f"{token} が見付からない (ファイル・ディレクトリいずれでもありません){hint}"
@@ -150,6 +153,26 @@ _GATE_PROVIDERS = {
     "max_lm_ppl": "lm.enabled",
     "reject_overlap": "overlap.enabled",
 }
+
+
+def _load_config(path: str) -> Config:
+    """filters.toml を読み、存在しないパス・未知のキー (打ち間違い) を起動時にエラーにする.
+
+    [thresholds] にはコード側デフォルトが無いので、ファイル名やキー名の打ち間違いを黙って
+    受け入れると「効いているつもりのゲートが走らない」まま数時間のランが最後まで進む。
+    """
+    try:
+        cfg = Config.load(Path(path))
+    except FileNotFoundError as e:
+        raise _bad_input(str(e)) from e
+    bad = [f"[thresholds] {k}" for k in unknown_threshold_keys(cfg.thresholds)]
+    bad += cfg.unknown_keys
+    if bad:
+        raise _bad_input(
+            f"{path} に未知の設定キーがある (打ち間違い?): {', '.join(bad)}。"
+            " 使えるキーは filters.toml の同梱版と src/make_dataset/config.py の DEFAULTS を参照"
+        )
+    return cfg
 
 
 def _warn_config(cfg: Config, mode: str = "run") -> None:
@@ -227,7 +250,7 @@ def run(
     config: str = typer.Option("filters.toml", "--config", help="閾値・挙動設定 filters.toml"),
     outdir: str = typer.Option("Data", "--outdir", help="出力ルート (Data/<モデル名>/ に書く)"),
 ):
-    cfg = Config.load(Path(config))
+    cfg = _load_config(config)
     _warn_config(cfg, "run")
     paths = resolve_inputs(inputs, Path(cfg.get("paths.voice")))
     typer.echo(f"[input] {paths[0].resolve().parent} から {len(paths)} ファイル")
@@ -280,7 +303,7 @@ def rescore(
         )
         raise typer.Exit(1)
 
-    cfg = Config.load(Path(config))
+    cfg = _load_config(config)
     _warn_config(cfg, "rescore")
     records = read_manifest(out / "manifest.jsonl")
     typer.echo(f"[rescore] records={len(records)} config={config}")
