@@ -99,7 +99,7 @@ ASR は **Qwen/Qwen3-ASR-1.7B** を第一候補（日本語特化・置信度が
 4. ズレ切り出し音声フィンガープリント（同一動画クリップの位置ズレ重複。speaker embedding は話者ベクトルなので内容照合には使わない）
 
 判定後は**グループ代表1本のみ自動採用**（基準: quality → ASR confidence → SNR の決定式）。
-manifest に `dup_group_id` / `dup_reason=exact|fuzzy_audio|fuzzy_text` / `dropped_by` を残す。
+manifest に `dup_group_id` / `dup_reason=exact|fuzzy_text|fuzzy_phoneme|fuzzy_audio` / `dropped_by` を残す。
 
 ## Stage 5b: 多様性選別（重複ではなく「似た」データも間引く）
 
