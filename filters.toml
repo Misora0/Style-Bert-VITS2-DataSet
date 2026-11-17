@@ -152,8 +152,11 @@ max_reverb_score = 0.5
 min_quality_pesq = 1.5         # 1.0 は PESQ スケールの下限値そのもので実質 no-op だった。実測分布を見て締める
 min_chars = 4
 max_filler_ratio = 0.6         # 0.8 は甘すぎた (filler_ratio は出現回数ベース)
-max_jitter_local = 0.02        # Praat の Get jitter (local) と同値 (2%)。旧計算は値が ~0 に潰れて実質無効だった。
-                               #   演技音声は 1% を超えやすいので、run し直した実測分布を見て校正する
+# max_jitter_local = 0.04      # 既定は無効。Praat の Get jitter (local) と同値 (0.04 = 4%)。
+                               #   演技音声 (叫び・泣き・かすれ・ささやき) は 2% を超えるのが普通で、感情の強い発話ほど高い。
+                               #   実測 (実データ 1,880 発話): 0.02 では 896 本 = 候補の 48% を除外し、外すと採用が
+                               #   889 → 1,668 本になった (0.025 に緩めるだけで単独除外 707 本が戻る)。有効にするなら
+                               #   report.html の感度表と manifest の jitter_local 分布を見て、明らかな外れ値だけ落とす値にする
 # max_shimmer_local = 0.05     # Praat の Get shimmer (local) と同値。実測分布を確認して有効化
 min_speaker_sim = 0.5          # CMVN 済み埋め込みの主話者 centroid と cosine (別人混入)。実測分布で要校正
 min_kana_ratio = 0.5           # 日本語らしさ (英語・記号化テキストの検出)。分母は かな+英数字 のみ

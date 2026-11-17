@@ -104,7 +104,7 @@ voice/<話者>/*.mp3|mp4 ...
 | `rolloff_hz` / `hf_energy_ratio` | スペクトルロールオフ／7kHz 以上エネルギー比 | 16k/24k アップコンの見せかけ高品質 |
 | `snr` / `voiced_ratio` | フレーム RMS を絶対騒音床（`min(p20×3, -55dBFS)`）で分割 | 無音率・有声率（ノイズ/咳のみ） |
 | `lufs` | pyloudnorm 統合ラウドネス（メータのブロック長未満は `None`） | 極端な大小 |
-| `jitter_local` / `shimmer_local` / `f0_median_hz` | 有声区間内の Praat 風 周期/振幅摂動・F0 中央値 | 嗄れ・叫び・異常ピッチ |
+| `jitter_local` / `shimmer_local` / `f0_median_hz` | Praat の PointProcess から取る周期/振幅摂動（local）・F0 中央値 | 嗄れ・叫び・異常ピッチ |
 | `reverb_score` | 末尾減衰エネルギー比（残響プロキシ） | ホールかかり |
 | `overlap_flag` / `overlap_sec` | `[overlap]` 無効の間は常に `None`。有効時は pyannote segmentation-3.0 が検出した 2 人同時発話の有無・秒数 | 2 人同時発話 |
 | `emb` | MFCC 統計を次元スケーリング（CMVN の分散側）した話者ベクトル | `speaker_sim` の材料（Stage 6 で使用） |
@@ -285,7 +285,7 @@ voice/<話者>/*.mp3|mp4 ...
 | 2 | `snr` | `min_snr_db`(min) | ● 5.0 | SNR 低 |
 | 2 | `voiced_ratio` | `min_voiced_ratio`(min) | ● 0.1 | 有声率极低 |
 | 2 | `lufs` | `min_input_lufs`(min) | ○ | 極端に小さい入力 |
-| 2 | `jitter_local` | `max_jitter_local`(max) | ● 0.02 | 周期摂動（嗄れ） |
+| 2 | `jitter_local` | `max_jitter_local`(max) | ○ 0.04 | 周期摂動（嗄れ）。演技音声で 2% 超が普通なので既定無効（DECISIONS 3.3） |
 | 2 | `shimmer_local` | `max_shimmer_local`(max) | ○ | 振幅摂動 |
 | 2 | `f0_median_hz` | `min_f0_hz`(min) / `max_f0_hz`(max) | ○ | 異常ピッチ |
 | 2 | `reverb_score` | `max_reverb_score`(max) | ● 0.5 | 残響 |

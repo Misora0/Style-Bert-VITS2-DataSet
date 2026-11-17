@@ -103,7 +103,9 @@ def test_jitter_matches_praat_local_definition(tmp_path):
     for g, p in zip(got, praat, strict=True):
         assert g == pytest.approx(p, abs=0.002), (got, praat)
     assert got[0] < got[1] < got[2]  # 揺らぎが大きいほど大きい (単調)
-    assert got[2] > 0.02  # 4% の揺らぎは既定ゲート max_jitter_local=0.02 を超える
+    assert (
+        got[2] > 0.02
+    )  # 4% の揺らぎは旧既定ゲート 0.02 を超える (演技音声で効きすぎるので既定は無効)
     assert all(r.scores["shimmer_local"] is not None for r in recs)
 
 
