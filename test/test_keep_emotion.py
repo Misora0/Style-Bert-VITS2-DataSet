@@ -28,7 +28,7 @@ from make_dataset.stage2_score import clipped_ratio
     ("asr2", "mark"),
     [
         ("そうなんですか?", "?"),
-        ("社長!", "!"),
+        ("先生!", "!"),
         ("それはー!", "!"),
         ("え、本当?!", "?!"),
         ("すごい!!!", "!"),
@@ -47,10 +47,10 @@ def test_restore_terminal_punct_only_when_readings_agree():
         restore_terminal_punct("そうなんですか。", "そうなんですか?", 0.0, 0.15)
         == "そうなんですか?"
     )
-    assert restore_terminal_punct("社長", "社長!", 0.0, 0.15) == "社長!"  # 文末記号なしにも付ける
-    # 読みが食い違う (「そうですか」/「どうですか?」) ときは記号も借りない
-    assert restore_terminal_punct("そうですか。", "どうですか?", 0.2, 0.15) is None
-    assert restore_terminal_punct("そうですか。", "そうですか?", None, 0.15) is None  # x_cer 不明
+    assert restore_terminal_punct("先生", "先生!", 0.0, 0.15) == "先生!"  # 文末記号なしにも付ける
+    # 読みが食い違う (「いいですか」/「良いですか?」) ときは記号も借りない
+    assert restore_terminal_punct("いいですか。", "良いですか?", 0.2, 0.15) is None
+    assert restore_terminal_punct("いいですか。", "いいですか?", None, 0.15) is None  # x_cer 不明
     assert restore_terminal_punct("本当?", "本当!", 0.0, 0.15) is None  # 既に記号があれば触らない
     assert restore_terminal_punct("はい。", "はい", 0.0, 0.15) is None  # 第 2 系統にも記号なし
 
