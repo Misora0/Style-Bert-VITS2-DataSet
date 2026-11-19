@@ -131,6 +131,46 @@ def test_short_file_is_not_split_at_pause(tmp_path, monkeypatch):
     assert 2.6 < r.scores["seg_dur"] < 3.0
 
 
+def _segment_quiet_onset(tmp_path: Path, monkeypatch, quiet_db: float):
+    """「小声の出だし 1.4s → 大きい声 1.0s」のファイルで、VAD が後半の大きい声だけを 1 区間返す状況."""
+    import silero_vad
+
+    from make_dataset.stage0_ingest import Source
+    from make_dataset.stage1_segment import segment_sources
+
+    sr = 44100
+    z = np.zeros(int(0.1 * sr), dtype=np.float32)
+    t1 = np.arange(int(1.4 * sr)) / sr
+    t2 = np.arange(int(1.0 * sr)) / sr
+    quiet = (0.5 * 10 ** (quiet_db / 20) * np.sin(2 * np.pi * 220 * t1)).astype(np.float32)
+    loud = (0.5 * np.sin(2 * np.pi * 220 * t2)).astype(np.float32)
+    x = np.concatenate([z, quiet, loud, z])
+    path = tmp_path / f"onset{int(-quiet_db)}.wav"
+    sf.write(path, x, sr)
+    vad = [{"start": int(1.5 * 16000), "end": int(2.5 * 16000)}]  # 大きい声だけ
+    monkeypatch.setattr(silero_vad, "load_silero_vad", lambda: None)
+    monkeypatch.setattr(silero_vad, "get_speech_timestamps", lambda *a, **k: list(vad))
+    cfg = Config({"stage1": {"whole_file_max_s": 12.0, "decode_chunk_min": 0}})
+    return segment_sources([Source(src_hash=f"q{int(-quiet_db)}", path=path)], cfg, tmp_path / "c")
+
+
+def test_quiet_onset_is_kept_even_if_vad_misses_it(tmp_path, monkeypatch):
+    """VAD が出だしの小声を取りこぼして 1 区間しか返さなくても、セリフの頭から切り出す.
+
+    旧実装は「2 区間以上のときだけ 1 本にまとめる」ので、VAD の 1.5s 目からそのまま切り出していた。
+    """
+    (r,) = _segment_quiet_onset(tmp_path, monkeypatch, quiet_db=-30.0)
+    assert r.scores.get("whole_file") is True
+    assert r.start < 0.15, r.start  # 小声の出だし (0.1s〜) から
+    assert r.end > 2.45
+
+
+def test_energy_trim_ignores_sound_below_trim_db(tmp_path, monkeypatch):
+    """最大音量から 40dB より小さい音 (残響・ノイズ相当) は、出だしとみなさない."""
+    (r,) = _segment_quiet_onset(tmp_path, monkeypatch, quiet_db=-50.0)
+    assert r.start > 1.4, r.start  # VAD の位置 (1.5s) 付近のまま
+
+
 def test_split_unchanged_when_disabled_or_long(tmp_path, monkeypatch):
     # 無効 (既定 0) なら従来どおり間で 2 つに切る
     assert len(_segment_with_fake_vad(tmp_path, monkeypatch, whole_file_max_s=0.0, dur=3.0)) == 2

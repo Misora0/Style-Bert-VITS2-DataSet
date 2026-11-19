@@ -27,6 +27,27 @@ from .manifest import Record
 from .stage0_ingest import Source, decode, decode_range, probe_duration, resample_to
 
 
+def _energy_bounds(
+    audio: np.ndarray, sr: int, trim_db: float, frame_ms: float = 10.0
+) -> tuple[int, int] | None:
+    """音量で見た「最初の音〜最後の音」(サンプル位置)。最大フレーム RMS から trim_db 以上小さい部分を無音とする.
+
+    1 ファイル 1 セリフの素材で、VAD が小声・息混じりの出だしを話声と判定しない取りこぼしを補う。
+    無音しか無い (最大 RMS が 0) なら None。
+    """
+    hop = max(1, int(sr * frame_ms / 1000))
+    n = len(audio) // hop
+    if n == 0:
+        return None
+    fr = np.asarray(audio[: n * hop], dtype=np.float64).reshape(n, hop)
+    rms = np.sqrt((fr**2).mean(axis=1))
+    ref = float(rms.max())
+    if ref <= 0:
+        return None
+    on = np.flatnonzero(rms >= ref * 10 ** (-trim_db / 20))
+    return int(on[0] * hop), int(min(len(audio), (on[-1] + 1) * hop))
+
+
 def _refine_boundary(audio: np.ndarray, sr: int, pos: int, side: str, window: int) -> int:
     """VAD 境界を「話声の実際の始端/終端」へ寄せる (エネルギーベース境界補正).
 
@@ -92,6 +113,9 @@ def segment_sources(sources: list[Source], cfg: Config, cache_dir: Path) -> list
     out_pad = round(44100 * float(s1.get("output_pad_ms") or 0) / 1000)
     cache_min = s1["cache_min_sec"]
     whole_max = float(s1.get("whole_file_max_s") or 0)  # 0 = 無効 (従来どおり VAD で分割)
+    trim_db = float(
+        s1.get("whole_file_trim_db") or 40.0
+    )  # 1 ファイル 1 発話の前後無音の判定 (最大音量比)
     chunk_s = (s1.get("decode_chunk_min") or 0) * 60.0
     # チャンク境界で VAD のマージ/分割が全体デコードとズレないよう、前後に「最長発話 + 無音/音声判定 + 補正窓」
     # ぶんの文脈を確保する 。保持メモリは (chunk + 2*pad) で有界。
@@ -140,11 +164,18 @@ def segment_sources(sources: list[Source], cfg: Config, cache_dir: Path) -> list
                 # 文の途中なのに「。」で終わる教師になる (実データ: 84% のファイルが分割、1,012 本が一部だけ採用)。
                 # whole_file_max_s 以下のファイルは、最初の発話の頭〜最後の発話の終わりを 1 本にまとめ、
                 # 前後の無音だけを詰める (中の間は残す)。
-                whole = bool(
-                    whole_max and not chunked and len(ts) > 1 and len(x441) <= whole_max * 44100
-                )
+                # VAD が 1 区間しか見つけなくても対象にする: 出だしが小声・息混じりのセリフでは VAD が
+                # 後半の大きい声だけを 1 区間として返し、頭の 1〜2 秒を捨てていた (実測: 本文が
+                # 語の途中から始まる発話が、元ファイルの 1.47s から切り出されていた)。
+                whole = bool(whole_max and not chunked and ts and len(x441) <= whole_max * 44100)
                 if whole:
-                    ts = [{"start": ts[0]["start"], "end": ts[-1]["end"]}]
+                    s16, e16 = int(ts[0]["start"]), int(ts[-1]["end"])
+                    # 範囲は「VAD の最初〜最後」と「音量でみた最初〜最後」の広い方 (語頭・語尾を削らない)
+                    eb = _energy_bounds(x441, 44100, trim_db)
+                    if eb is not None:
+                        s16 = min(s16, int(eb[0] * 16000 / 44100))
+                        e16 = max(e16, int(eb[1] * 16000 / 44100))
+                    ts = [{"start": s16, "end": e16}]
                 win441 = int(44100 * win_ms / 1000)
                 base16 = round(win_lo * 16000)
                 own_hi16 = round(owned_hi * 16000) if owned_hi != float("inf") else None
